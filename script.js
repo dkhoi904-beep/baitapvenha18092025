@@ -1,162 +1,140 @@
-// 1. KHỞI TẠO ERA WIDGET SDK
+// --- 1. KHỞI TẠO ERA WIDGET SDK ---
 const eraWidget = new EraWidget();
 let config = null;
 
-// Khởi tạo biểu đồ Realtime (Chart.js)
-const ctx = document.getElementById('dataChart').getContext('2d');
-const dataChart = new Chart(ctx, {
-    type: 'line',
-    data: {
-        labels: [], // Thời gian thực
-        datasets: [
-            {
-                label: 'Nhiệt độ (°C)',
-                data: [],
-                borderColor: '#ff5e62',
-                backgroundColor: 'rgba(255, 94, 98, 0.1)',
-                borderWidth: 2,
-                tension: 0.4
-            },
-            {
-                label: 'Độ ẩm (%)',
-                data: [],
-                borderColor: '#00c6ff',
-                backgroundColor: 'rgba(0, 198, 255, 0.1)',
-                borderWidth: 2,
-                tension: 0.4
-            }
-        ]
-    },
-    options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        scales: {
-            y: { beginAtZero: true }
-        }
-    }
-});
+// Khởi tạo mảng lưu dữ liệu biểu đồ (Chart.js)
+let chartLabels = [];
+let chartTempData = [];
+let chartHumidData = [];
 
-// Mảng lưu trữ dữ liệu lịch sử để phục vụ Modal "Phân Tích Dữ Liệu"
-let historyData = [];
+// Trạng thái các Virtual Pin
+const VPIN_TEMP = 'V0';
+const VPIN_HUMID = 'V1';
+const VPIN_FAN = 'V2';
+const VPIN_PUMP = 'V3';
+const VPIN_LUX = 'V4';
+const VPIN_AUTO_MODE = 'V5';
 
-// 2. LẮNG NGHE CẤU HÌNH VÀ CẬP NHẬT DỮ LIỆU TỪ E-RA
 eraWidget.onConfiguration((configuration) => {
     config = configuration;
 });
 
+// Lắng nghe dữ liệu thay đổi từ Cloud E-Ra truyền xuống Dashboard
 eraWidget.onValues((values) => {
-    if (!config) return;
-
-    // --- XỬ LÝ LỖI HIỂN THỊ QUÁ NHIỀU SỐ 0 (Dùng .toFixed(1) để làm tròn 1 chữ số thập phân) ---
-    
-    // V0: Nhiệt độ
-    if (values[config.configuration.sensors[0].id]) {
-        const rawTemp = values[config.configuration.sensors[0].id].value;
-        const tempVal = parseFloat(rawTemp).toFixed(1);
-        document.getElementById('valTemp').innerText = tempVal + '°C';
-        document.querySelector('.temp-widget .gauge').style.setProperty('--value', tempVal);
-    }
-
-    // V1: Độ ẩm không khí
-    if (values[config.configuration.sensors[1].id]) {
-        const rawHumid = values[config.configuration.sensors[1].id].value;
-        const humidVal = parseFloat(rawHumid).toFixed(1);
-        document.getElementById('valHumid').innerText = humidVal + '%';
-        document.querySelector('.humidifier-widget .gauge').style.setProperty('--value', humidVal);
+    // A. CẬP NHẬT CẢM BIẾN & SỬA LỖI HIỂN THỊ SỐ THỰC QUÁ DÀI (.toFixed)
+    if (values[VPIN_TEMP]) {
+        const tempVal = parseFloat(values[VPIN_TEMP].value);
+        const fixedTemp = tempVal.toFixed(1); // Làm tròn 1 chữ số thập phân (Ví dụ: 30.5)
         
-        // Cập nhật biểu đồ Realtime và mảng lịch sử khi có độ ẩm/nhiệt độ mới
-        updateChartAndHistory(tempVal || 0, humidVal);
+        document.getElementById('valTemp').innerText = fixedTemp + '°C';
+        document.getElementById('weatherBoxTemp').innerText = fixedTemp + '°C';
+        
+        // Cập nhật vòng Gauge tròn CSS
+        document.querySelector('.temp-widget .gauge').style.setProperty('--value', Math.round(tempVal));
+        
+        // Lưu data vẽ chart
+        updateChartData(fixedTemp, null);
     }
 
-    // V4: Cường độ ánh sáng Lux
-    if (values[config.configuration.sensors[4].id]) {
-        const rawLux = values[config.configuration.sensors[4].id].value;
-        document.getElementById('valLux').innerText = parseFloat(rawLux).toFixed(0) + ' lx'; 
+    if (values[VPIN_HUMID]) {
+        const humidVal = parseFloat(values[VPIN_HUMID].value);
+        const fixedHumid = humidVal.toFixed(1); // Khắc phục lỗi hiển thị 69.400002% -> 69.4%
+        
+        document.getElementById('valHumid').innerText = fixedHumid + '%';
+        document.querySelector('.humidifier-widget .gauge').style.setProperty('--value', Math.round(humidVal));
+        
+        updateChartData(null, fixedHumid);
     }
 
-    // --- ĐỒNG BỘ TRẠNG THÁI THIẾT BỊ TỪ CLOUD VỀ DASHBOARD ---
-    
-    // V2: Quạt Thông Gió
-    if (values[config.configuration.sensors[2].id]) {
-        const fanState = parseInt(values[config.configuration.sensors[2].id].value);
+    if (values[VPIN_LUX]) {
+        const luxVal = parseFloat(values[VPIN_LUX].value).toFixed(0); // Ánh sáng chỉ cần số nguyên
+        document.getElementById('valLux').innerText = luxVal + ' lx';
+    }
+
+    // B. ĐỒNG BỘ TRẠNG THÁI CÁC NÚT ĐIỀU KHIỂN TỪ ĐIỆN THOẠI/THIẾT BỊ LÊN WEB
+    if (values[VPIN_FAN]) {
+        const fanState = parseInt(values[VPIN_FAN].value);
         const fanIcon = document.getElementById('fanIcon');
         const fanStatus = document.getElementById('fanStatus');
+        
         if (fanState === 1) {
-            fanStatus.innerText = 'BẬT';
-            fanIcon.classList.add('spinning'); // Thêm hiệu ứng xoay nếu CSS có hỗ trợ
+            fanStatus.innerText = "BẬT";
+            fanIcon.classList.add('fa-spin'); // Tạo hiệu ứng xoay cánh quạt nếu CSS có hỗ trợ
         } else {
-            fanStatus.innerText = 'TẮT';
-            fanIcon.classList.remove('spinning');
+            fanStatus.innerText = "TẮT";
+            fanIcon.classList.remove('fa-spin');
         }
     }
 
-    // V3: Máy Bơm Nước
-    if (values[config.configuration.sensors[3].id]) {
-        const pumpState = parseInt(values[config.configuration.sensors[3].id].value);
-        document.getElementById('pumpValue').innerText = pumpState === 1 ? 'BẬT' : 'TẮT';
+    if (values[VPIN_PUMP]) {
+        const pumpState = parseInt(values[VPIN_PUMP].value);
         document.getElementById('pumpSlider').value = pumpState;
+        document.getElementById('pumpValue').innerText = (pumpState === 1) ? "BẬT" : "TẮT";
     }
 
-    // V5: Chế độ Hệ thống (Auto / Manual)
-    if (values[config.configuration.sensors[5].id]) {
-        const modeState = parseInt(values[config.configuration.sensors[5].id].value);
-        document.getElementById('modeStatus').innerText = modeState === 1 ? 'TỰ ĐỘNG' : 'THỦ CÔNG';
-        document.getElementById('modeSlider').value = modeState;
+    if (values[VPIN_AUTO_MODE]) {
+        const autoState = parseInt(values[VPIN_AUTO_MODE].value);
+        document.getElementById('modeSlider').value = autoState;
+        document.getElementById('modeStatus').innerText = (autoState === 1) ? "TỰ ĐỘNG" : "THỦ CÔNG";
     }
 });
 
-// 3. GỬI LỆNH ĐIỀU KHIỂN TỪ DASHBOARD LÊN CLOUDk (Gửi giá trị 0 hoặc 1)
+// --- 2. SỰ KIỆN ĐIỀU KHIỂN TỪ WEB GỬI LÊN CLOUD E-RA ---
+// Nhấn nút Quạt
 document.getElementById('fanIcon').addEventListener('click', () => {
     const currentStatus = document.getElementById('fanStatus').innerText;
-    const nextAction = currentStatus === 'TẮT' ? 1 : 0;
-    eraWidget.triggerAction(config.configuration.actions[0].id, nextAction); // Action Bật/Tắt Quạt
+    const nextState = (currentStatus === "TẮT") ? 1 : 0;
+    eraWidget.triggerAction(config.actions[nextState === 1 ? 0 : 1].actionCode); // Action Vị trí 0 (ON) & 1 (OFF)
 });
 
+// Kéo thanh Máy bơm
 document.getElementById('pumpSlider').addEventListener('input', (e) => {
-    const nextAction = parseInt(e.target.value);
-    eraWidget.triggerAction(config.configuration.actions[2].id, nextAction); // Action Bật/Tắt Bơm
+    const nextState = parseInt(e.target.value);
+    eraWidget.triggerAction(config.actions[nextState === 1 ? 2 : 3].actionCode); // Action Vị trí 2 (ON) & 3 (OFF)
 });
 
+// Kéo thanh Chế độ Auto/Manual
 document.getElementById('modeSlider').addEventListener('input', (e) => {
-    const nextAction = parseInt(e.target.value);
-    eraWidget.triggerAction(config.configuration.actions[4].id, nextAction); // Action Bật/Tắt Auto Mode
+    const nextState = parseInt(e.target.value);
+    eraWidget.triggerAction(config.actions[nextState === 1 ? 4 : 5].actionCode); // Action Vị trí 4 (ON) & 5 (OFF)
 });
 
 
-// 4. KHẮC PHỤC LỖI CHUYỂN TAB (Ẩn/Hiện phân khu tương ứng trực quan)
+// --- 3. LOGIC SỬA LỖI CHUYỂN CÁC TAB ẨN / HIỆN WIDGET ---
 const navLinks = document.querySelectorAll('.nav a');
-const widgets = document.querySelectorAll('.widgets .widget');
+const allWidgets = document.querySelectorAll('.widgets .widget');
 
 navLinks.forEach(link => {
     link.addEventListener('click', function(e) {
-        e.preventDefault(); // Ngăn chặn nhảy trang do dấu '#'
+        e.preventDefault(); // Ngăn hành vi cuộn trang mặc định của dấu #
         
-        // Đổi class Active cho Tab được nhấn
+        // 1. Đổi active class cho Tab được nhấn
         document.querySelector('.nav a.active').classList.remove('active');
         this.classList.add('active');
-
+        
+        // 2. Lấy tên Tab
         const tabName = this.textContent.trim();
-
-        // Thuật toán lọc Widget theo Tab điều hướng
-        widgets.forEach(widget => {
+        
+        // 3. Thực hiện ẩn/hiện widget tương ứng theo phân khu
+        allWidgets.forEach(widget => {
             if (tabName === "TRẠM TỔNG") {
-                widget.style.display = 'block'; // Trạm tổng hiển thị tất cả
+                // Hiện toàn bộ mọi widget
+                widget.style.display = 'block';
             } 
             else if (tabName === "KHU TRỒNG TRỌT") {
-                // Chỉ hiển thị Nhiệt độ, Độ ẩm, Ánh sáng BH1750 và Đồ thị
+                // Chỉ hiện các thông số môi trường cảm biến (Nhiệt độ, Độ ẩm, Ánh sáng/Đất)
                 if (widget.classList.contains('temp-widget') || 
                     widget.classList.contains('humidifier-widget') || 
-                    widget.classList.contains('weather-widget') ||
-                    widget.classList.contains('chart-container')) {
+                    widget.innerHTML.includes('BH1750')) {
                     widget.style.display = 'block';
                 } else {
                     widget.style.display = 'none';
                 }
             } 
             else if (tabName === "HỆ THỐNG TƯỚI") {
-                // Chỉ hiện Máy bơm nước, Quạt thông gió và Đồ thị
-                if (widget.classList.contains('bedLight-widget') || 
-                    widget.classList.contains('apple-style') ||
+                // Chỉ hiện Máy bơm nước, Quạt thông gió và Đồ thị thống kê
+                if (widget.classList.contains('apple-style') || 
+                    widget.classList.contains('bedLight-widget') || 
                     widget.classList.contains('chart-container')) {
                     widget.style.display = 'block';
                 } else {
@@ -164,7 +142,7 @@ navLinks.forEach(link => {
                 }
             } 
             else if (tabName === "CẤU HÌNH HỆ THỐNG") {
-                // Chỉ hiện Widget điều chỉnh Chế độ hệ thống (Auto Mode)
+                // Chỉ hiển thị Khối chọn Chế độ (Auto/Manual)
                 if (widget.classList.contains('livingRoom-widget')) {
                     widget.style.display = 'block';
                 } else {
@@ -175,50 +153,25 @@ navLinks.forEach(link => {
     });
 });
 
-// 5. CÁC HÀM HỖ TRỢ BIỂU ĐỒ & POPUP DỮ LIỆU LỊCH SỬ
-function updateChartAndHistory(temp, humid) {
-    const now = new Date();
-    const timeStr = now.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-
-    // Cập nhật Chart (Giới hạn tối đa 10 điểm hiển thị trực tiếp)
-    if (dataChart.data.labels.length > 10) {
-        dataChart.data.labels.shift();
-        dataChart.data.datasets[0].data.shift();
-        dataChart.data.datasets[1].data.shift();
+// --- 4. HÀM PHỤ TRỢ CẬP NHẬT BIỂU ĐỒ REALTIME ---
+function updateChartData(temp, humid) {
+    const now = new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    
+    if (chartLabels.length > 10) {
+        chartLabels.shift();
+        if(temp) chartTempData.shift();
+        if(humid) chartHumidData.shift();
     }
-    dataChart.data.labels.push(timeStr);
-    dataChart.data.datasets[0].data.push(temp);
-    dataChart.data.datasets[1].data.push(humid);
-    dataChart.update();
-
-    // Lưu vào mảng lịch sử
-    historyData.unshift({ time: timeStr, temp: temp, humid: humid });
+    
+    if(temp || humid) chartLabels.push(now);
+    if(temp) chartTempData.push(temp);
+    if(humid) chartHumidData.push(humid);
+    
+    // Nếu biến myChart (Chart.js) đã được khởi tạo trong mã của bạn, hãy gọi lệnh update:
+    if (typeof myChart !== 'undefined') {
+        myChart.update();
+    }
 }
 
-// Điều khiển Modal Xem Bảng Dữ Liệu 
-const modal = document.getElementById('statsModal');
-const closeBtn = document.querySelector('.close');
-
-document.querySelectorAll('.time-range').forEach(btn => {
-    btn.addEventListener('click', function() {
-        document.querySelector('.time-range.active').classList.remove('active');
-        this.classList.add('active');
-
-        if (this.getAttribute('data-minutes') === "5") {
-            // Hiển thị Modal và đổ dữ liệu vào bảng
-            modal.style.display = "block";
-            const tbody = document.getElementById('statsTableBody');
-            tbody.innerHTML = ''; // Reset bảng
-            
-            historyData.forEach(row => {
-                tbody.innerHTML += `<tr><td>${row.time}</td><td>${row.humid}%</td><td>${row.temp}°C</td></tr>`;
-            });
-        }
-    });
-});
-
-closeBtn.onclick = function() { modal.style.display = "none"; }
-window.onclick = function(event) { if (event.target == modal) modal.style.display = "none"; }
-
-// Bắt đầu khởi tạo kết nối widget
+// Bắt buộc gọi lệnh ready để SDK thông báo widget đã sẵng sàng kết nối Cloud
 eraWidget.init();
